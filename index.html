@@ -248,7 +248,7 @@ function cardHtml(b){
       '<div class="route">' + esc(b.Pickup) + ' &rarr; ' + esc(b['Drop Off']) + '</div>' +
       '<div class="meta">' + esc(who || '-') + ' · ' + esc(nameOf.company(b['Company ID']) || b['Requester Type']) + '<br>' +
         esc(b['Car Type']) + ' · ' + esc(b['Trip Type']) + (b['Flight Details'] ? ' · ' + esc(b['Flight Details']) : '') + '<br>' +
-        assigned + (b.Reason ? '<br>Alasan: ' + esc(b.Reason) : '') + '</div>' +
+        assigned + (b['On Call Type'] ? ' · On call ' + esc(b['On Call Type']) + (b['Driver Share'] !== '' && b['Driver Share'] != null ? ' (share ' + rp(b['Driver Share']) + ')' : '') : '') + (b.Reason ? '<br>Alasan: ' + esc(b.Reason) : '') + '</div>' +
       '<div class="actions">' + a.join('') + '</div>' +
     '</div>' +
     '<div class="side">' +
@@ -362,14 +362,19 @@ async function assignModal(b){
     av = await api('availability', { date: b['Pickup Date'], time: b['Pickup Time'], tripType: b['Trip Type'], carType: b['Car Type'], excludeId: b['Booking ID'] });
   } catch (e) { closeModal(); return toast(e.message, true); }
 
-  const score = d => (d.busy.length ? 2 : 0) + (d.onShift ? 0 : 1);
+  const pct = Number((state.master.settings || {}).ONCALL_SHARE_PCT || 40);
+  const score = d => (d.busy.length ? 4 : 0) + (d.onShift ? 0 : !d.canOnCall ? 3 : d.shift === 'Off' ? 2 : 1);
   const drivers = av.drivers.slice().sort((x, y) => score(x) - score(y));
   const vehicles = av.vehicles.slice().sort((x, y) => (x.busy.length + (x.status === 'Maintenance' ? 2 : 0)) - (y.busy.length + (y.status === 'Maintenance' ? 2 : 0)));
   const sel = { driver: b['Driver ID'] || '', vehicle: b['Vehicle ID'] || '' };
 
+  const dBadge = d => d.busy.length ? '<span class="badge s-Cancelled">Bentrok</span>'
+    : d.onShift ? '<span class="badge s-Done">Shift</span>'
+    : !d.canOnCall ? '<span class="badge s-Cancelled">Reguler saja</span>'
+    : d.shift === 'Off' ? '<span class="badge s-Assigned">Libur, bisa on call</span>'
+    : '<span class="badge s-OnTrip">On call</span>';
   const dHtml = drivers.map(d => '<div class="pick' + (d.id === sel.driver ? ' sel' : '') + '" data-d="' + esc(d.id) + '"><div><b>' + esc(d.name) + '</b><br><small>' +
-      esc(d.shift ? 'Shift ' + d.shift : 'Tanpa jadwal') + (d.type === 'On Call' ? ' · On call' : '') + '</small></div><div>' +
-      (d.busy.length ? '<span class="badge s-Cancelled">Bentrok</span>' : d.onShift ? '<span class="badge s-Done">Tersedia</span>' : '<span class="badge s-Assigned">Di luar shift</span>') + '</div></div>').join('')
+      esc(d.shift ? 'Jadwal: ' + d.shift : 'Tanpa jadwal') + '</small></div><div>' + dBadge(d) + '</div></div>').join('')
     || '<div class="note">Belum ada data driver di tab Drivers</div>';
   const vHtml = vehicles.map(v => '<div class="pick' + (v.id === sel.vehicle ? ' sel' : '') + '" data-v="' + esc(v.id) + '"><div><b>' + esc(v.plate) + '</b><br><small>' + esc(v.carType) + '</small></div><div>' +
       (v.status === 'Maintenance' ? '<span class="badge s-Cancelled">Maintenance</span>' : v.busy.length ? '<span class="badge s-Cancelled">Bentrok</span>' : '<span class="badge s-Done">Tersedia</span>') + '</div></div>').join('')
@@ -377,36 +382,54 @@ async function assignModal(b){
 
   openModal(
     '<h2>Assign ' + esc(b['Booking ID']) + '</h2>' +
-    '<div class="note">' + esc(b['Pickup Date']) + ' ' + esc(b['Pickup Time']) + ' · ' + esc(b.Pickup) + ' &rarr; ' + esc(b['Drop Off']) + ' · ' + esc(b['Car Type']) +
+    '<div class="note">' + esc(b['Pickup Date']) + ' ' + esc(b['Pickup Time']) + ' · ' + esc(b.Pickup) + ' &rarr; ' + esc(b['Drop Off']) + ' · ' + esc(b['Car Type']) + ' · ' + rp(b.Price) +
       (av.regularHours ? '' : ' · <b>Di luar jam reguler, gunakan driver on call</b>') + '</div>' +
     '<div class="grid" style="margin-top:12px">' +
       '<div><label>Sumber driver</label><select id="aSource">' + opts(state.master.lists['Driver Source'] || ['Reguler', 'On Call', 'Vendor'], b['Driver Source'] || (av.regularHours ? 'Reguler' : 'On Call')) + '</select></div>' +
       '<div id="vendorWrap"><label>Nama vendor</label><input id="aVendor" value="' + esc(b['Vendor Name']) + '"></div>' +
       '<div id="drvWrap"><label>Driver</label><div class="picks" id="dPicks">' + dHtml + '</div></div>' +
       '<div id="vehWrap"><label>Unit</label><div class="picks" id="vPicks">' + vHtml + '</div></div>' +
+      '<div id="offWrap" class="full hidden"><label style="display:flex;gap:8px;align-items:center;color:inherit"><input type="checkbox" id="aAgree" style="width:auto"> Driver sudah menyanggupi masuk di hari libur</label></div>' +
+      '<div id="shareNote" class="note full"></div>' +
     '</div>' +
     '<div id="aWarn"></div>' +
     '<div class="foot"><button class="btn" id="mCancel">Tutup</button><button class="btn primary" id="mSave">Assign</button></div>'
   );
 
-  const toggle = () => {
-    const vendor = $('aSource').value === 'Vendor';
+  const curDriver = () => drivers.find(x => x.id === sel.driver);
+  const sync = () => {
+    const source = $('aSource').value, vendor = source === 'Vendor', d = curDriver();
     $('vendorWrap').classList.toggle('hidden', !vendor);
     $('drvWrap').classList.toggle('hidden', vendor);
     $('vehWrap').classList.toggle('hidden', vendor);
+    $('offWrap').classList.toggle('hidden', vendor || !(d && d.shift === 'Off'));
+    $('shareNote').textContent = (source === 'On Call' && d)
+      ? 'On call ' + (d.shift === 'Off' ? 'hari libur' : 'luar shift') + ' · share driver ' + pct + '%: ' + (b.Price !== '' ? rp(Math.round(Number(b.Price) * pct / 100)) : 'harga belum diisi')
+      : '';
   };
-  $('aSource').onchange = toggle; toggle();
-  $('dPicks').onclick = e => { const p = e.target.closest('[data-d]'); if (!p) return; sel.driver = p.dataset.d; $('dPicks').querySelectorAll('.pick').forEach(x => x.classList.toggle('sel', x === p)); };
+  $('aSource').onchange = sync;
+  $('dPicks').onclick = e => {
+    const p = e.target.closest('[data-d]'); if (!p) return;
+    sel.driver = p.dataset.d;
+    $('dPicks').querySelectorAll('.pick').forEach(x => x.classList.toggle('sel', x === p));
+    const d = curDriver();
+    if (d && $('aSource').value !== 'Vendor') $('aSource').value = d.onShift ? 'Reguler' : 'On Call';
+    $('aAgree').checked = false;
+    sync();
+  };
   $('vPicks').onclick = e => { const p = e.target.closest('[data-v]'); if (!p) return; sel.vehicle = p.dataset.v; $('vPicks').querySelectorAll('.pick').forEach(x => x.classList.toggle('sel', x === p)); };
   $('mCancel').onclick = closeModal;
+  sync();
 
   const submit = async force => {
-    const source = $('aSource').value;
+    const source = $('aSource').value, d = curDriver();
     if (source === 'Vendor' && !$('aVendor').value.trim()) return toast('Isi nama vendor', true);
     if (source !== 'Vendor' && (!sel.driver || !sel.vehicle)) return toast('Pilih driver dan unit', true);
+    if (source !== 'Vendor' && d && d.shift === 'Off' && !$('aAgree').checked) return toast('Driver sedang libur, centang "driver sudah menyanggupi"', true);
     $('mSave').disabled = true;
     try {
-      const r = await api('assign', { id: b['Booking ID'], driverId: sel.driver, vehicleId: sel.vehicle, source: source, vendorName: $('aVendor').value.trim(), force: !!force });
+      const r = await api('assign', { id: b['Booking ID'], driverId: sel.driver, vehicleId: sel.vehicle, source: source,
+        vendorName: $('aVendor').value.trim(), offDayAgreed: $('aAgree').checked, force: !!force });
       if (r.needConfirm) {
         $('aWarn').innerHTML = '<div class="warnbox"><b>Perlu konfirmasi:</b><br>' + r.issues.map(esc).join('<br>') +
           '<div style="margin-top:8px"><button class="btn sm" id="forceBtn">Tetap assign</button></div></div>';
@@ -414,7 +437,7 @@ async function assignModal(b){
         $('mSave').disabled = false;
         return;
       }
-      toast('Ter-assign'); closeModal(); await refresh();
+      toast('Ter-assign' + (r.onCallType ? ' (on call ' + r.onCallType + ')' : '')); closeModal(); await refresh();
     } catch (e) { toast(e.message, true); $('mSave').disabled = false; }
   };
   $('mSave').onclick = () => submit(false);
