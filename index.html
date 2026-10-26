@@ -247,7 +247,8 @@ function cardHtml(b){
     '<div>' +
       '<div class="route">' + esc(b.Pickup) + ' &rarr; ' + esc(b['Drop Off']) + '</div>' +
       '<div class="meta">' + esc(who || '-') + ' · ' + esc(nameOf.company(b['Company ID']) || b['Requester Type']) + '<br>' +
-        esc(b['Car Type']) + ' · ' + esc(b['Trip Type']) + (b['Flight Details'] ? ' · ' + esc(b['Flight Details']) : '') + '<br>' +
+        esc(b['Car Type']) + ' · ' + esc(b['Trip Type']) + (b['Flight Details'] ? ' · ' + esc(b['Flight Details']) : '') +
+        (Number(b['Reschedule Count']) ? ' · Reschedule ' + esc(b['Reschedule Count']) + 'x' : '') + '<br>' +
         assigned + (b['On Call Type'] ? ' · On call ' + esc(b['On Call Type']) + (b['Driver Share'] !== '' && b['Driver Share'] != null ? ' (share ' + rp(b['Driver Share']) + ')' : '') : '') + (b.Reason ? '<br>Alasan: ' + esc(b.Reason) : '') + '</div>' +
       '<div class="actions">' + a.join('') + '</div>' +
     '</div>' +
@@ -289,6 +290,8 @@ function bookingForm(b){
       f('', 'Tanggal pickup *', inp('Pickup Date', 'date', 'required')) +
       f('', 'Jam pickup *', inp('Pickup Time', 'time', 'required')) +
       f('', 'Detail flight', inp('Flight Details', 'text', 'placeholder="mis. GA 404 / 14:20"'), 'full') +
+      (isEdit ? '<div id="reschWrap" class="full hidden"><label style="display:flex;gap:8px;align-items:center;color:inherit"><input type="checkbox" id="reschChk" style="width:auto"> Reschedule permintaan customer</label>' +
+        '<div class="note" id="reschNote"></div></div>' : '') +
 
       '<div class="section">Pemesan</div>' +
       f('', 'Tipe pemesan *', sel('Requester Type', L['Requester Type'] || [])) +
@@ -347,6 +350,20 @@ function bookingForm(b){
   });
   autoPrice();
 
+  const reschAmt = Number((state.master.settings || {}).INCENTIVE_RESCHEDULE || 15000);
+  const dateMoved = () => isEdit && (form['Pickup Date'].value !== b['Pickup Date'] || form['Pickup Time'].value !== b['Pickup Time']);
+  const syncResch = () => {
+    if (!isEdit) return;
+    const moved = dateMoved();
+    $('reschWrap').classList.toggle('hidden', !moved);
+    if (!moved) { $('reschChk').checked = false; return; }
+    const hasDriver = b['Driver ID'] && b['Driver Source'] !== 'Vendor';
+    $('reschNote').textContent = hasDriver
+      ? 'Jika dicentang, ' + nameOf.driver(b['Driver ID']) + ' mendapat reschedule incentive ' + rp(reschAmt) + '.'
+      : 'Belum ada driver yang di-assign, reschedule dicatat tanpa incentive.';
+  };
+  if (isEdit) ['Pickup Date', 'Pickup Time'].forEach(k => ['input', 'change'].forEach(ev => form[k].addEventListener(ev, syncResch)));
+
   $('mCancel').onclick = closeModal;
   $('mSave').onclick = async () => {
     if (!form.reportValidity()) return;
@@ -355,8 +372,10 @@ function bookingForm(b){
     $('mSave').disabled = true;
     try {
       if (isEdit) {
-        const r = await api('updateBooking', { id: b['Booking ID'], data: data });
-        toast(r.changed.length ? 'Tersimpan (' + r.changed.length + ' perubahan)' : 'Tidak ada perubahan');
+        const r = await api('updateBooking', { id: b['Booking ID'], data: data, reschedule: dateMoved() && $('reschChk').checked });
+        toast((r.changed.length ? 'Tersimpan (' + r.changed.length + ' perubahan)' : 'Tidak ada perubahan') +
+          (r.incentive ? ' · incentive ' + rp(r.incentive.amount) + ' untuk ' + nameOf.driver(r.incentive.driverId) : ''));
+        if (data['Pickup Date'] !== state.date) { state.date = data['Pickup Date']; $('dateSel').value = state.date; }
       } else {
         const r = await api('createBooking', { data: data });
         toast('Booking ' + r.id + ' tersimpan' + (r.discount ? ' (diskon ' + r.discount + '%)' : ''));
