@@ -255,6 +255,7 @@ function cardHtml(b){
       '<span class="badge s-' + st.replace(' ', '') + '">' + esc(st) + '</span>' +
       (b.Priority && b.Priority !== 'Normal' ? '<span class="badge prio">' + esc(b.Priority) + '</span>' : '') +
       '<div class="price">' + rp(b.Price) + '</div>' +
+      (b['Discount %'] ? '<div class="note">Normal ' + rp(b['Base Price']) + ' · disk. ' + esc(b['Discount %']) + '%</div>' : '') +
       '<div class="note">' + esc(b['Payment Method'] || '') + (b['Payment Status'] ? ' · ' + esc(b['Payment Status']) : '') + '</div>' +
     '</div>' +
   '</div>';
@@ -305,7 +306,8 @@ function bookingForm(b){
       f('', 'Car type *', sel('Car Type', L['Car Type'] || [])) +
 
       '<div class="section">Harga & pembayaran</div>' +
-      f('', 'Harga (Rp)', inp('Price', 'number', 'min="0" step="1000"') + '<div class="note" id="rateNote"></div>') +
+      f('', 'Harga normal (Rp)', inp('Base Price', 'number', 'min="0" step="1000"') + '<div class="note" id="rateNote"></div>') +
+      f('', 'Harga akhir', '<div id="finalPrice" style="padding:8px 0;font-weight:700">-</div><div class="note" id="discNote"></div>') +
       f('', 'Metode bayar', sel('Payment Method', L['Payment Method'] || [], true)) +
       f('', 'Status bayar', sel('Payment Status', L['Payment Status'] || [])) +
       (isEdit ? f('', 'Status invoice', sel('Invoice Status', L['Invoice Status'] || [], true)) : '') +
@@ -316,13 +318,24 @@ function bookingForm(b){
   );
 
   const form = $('bForm');
-  let priceTouched = isEdit && b.Price !== '';
-  form.Price.addEventListener('input', () => { priceTouched = true; });
+  const basePrice = form['Base Price'];
+  if (isEdit && basePrice.value === '' && b.Price !== '' && b.Price != null) basePrice.value = b.Price;   // booking lama tanpa harga normal
+  let priceTouched = isEdit && basePrice.value !== '';
+  const staffPct = Number((state.master.settings || {}).STAFF_DISCOUNT_PCT || 20);
+  const showFinal = () => {
+    const base = basePrice.value === '' ? null : Number(basePrice.value);
+    const staff = form['Requester Type'].value === 'Nuanu Staff';
+    $('finalPrice').textContent = base === null ? '-' : rp(Math.round(base * (100 - (staff ? staffPct : 0)) / 100));
+    $('discNote').textContent = staff ? 'Diskon Nuanu Staff ' + staffPct + '%' : '';
+  };
+  basePrice.addEventListener('input', () => { priceTouched = true; showFinal(); });
+  form['Requester Type'].addEventListener('change', showFinal);
   const autoPrice = () => {
     const r = state.master.rates.find(x => String(x.Destination).toLowerCase() === form['Drop Off'].value.trim().toLowerCase()
       && x['Trip Type'] === form['Trip Type'].value && x['Car Type'] === form['Car Type'].value);
     $('rateNote').textContent = r ? 'Tarif: ' + rp(r.Price) : (form['Drop Off'].value ? 'Tarif tidak ditemukan, isi manual' : '');
-    if (r && !priceTouched) form.Price.value = r.Price;
+    if (r && !priceTouched) basePrice.value = r.Price;
+    showFinal();
   };
   ['Drop Off', 'Trip Type', 'Car Type'].forEach(k => form[k].addEventListener('change', autoPrice));
   form['Drop Off'].addEventListener('input', autoPrice);
@@ -346,7 +359,7 @@ function bookingForm(b){
         toast(r.changed.length ? 'Tersimpan (' + r.changed.length + ' perubahan)' : 'Tidak ada perubahan');
       } else {
         const r = await api('createBooking', { data: data });
-        toast('Booking ' + r.id + ' tersimpan');
+        toast('Booking ' + r.id + ' tersimpan' + (r.discount ? ' (diskon ' + r.discount + '%)' : ''));
         if (data['Pickup Date'] !== state.date) { state.date = data['Pickup Date']; $('dateSel').value = state.date; }
       }
       closeModal(); await refresh();
