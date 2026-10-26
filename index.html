@@ -249,7 +249,7 @@ function cardHtml(b){
       '<div class="meta">' + esc(who || '-') + ' · ' + esc(nameOf.company(b['Company ID']) || b['Requester Type']) + '<br>' +
         esc(b['Car Type']) + ' · ' + esc(b['Trip Type']) + (b['Flight Details'] ? ' · ' + esc(b['Flight Details']) : '') +
         (Number(b['Reschedule Count']) ? ' · Reschedule ' + esc(b['Reschedule Count']) + 'x' : '') + '<br>' +
-        assigned + (b['On Call Type'] ? ' · On call ' + esc(b['On Call Type']) + (b['Driver Share'] !== '' && b['Driver Share'] != null ? ' (share ' + rp(b['Driver Share']) + ')' : '') : '') + (b.Reason ? '<br>Alasan: ' + esc(b.Reason) : '') + '</div>' +
+        assigned + (st === 'Done' && b['Done At'] ? ' · Selesai ' + esc(String(b['Done At']).slice(11, 16)) : '') + (b['On Call Type'] ? ' · On call ' + esc(b['On Call Type']) + (b['Driver Share'] !== '' && b['Driver Share'] != null ? ' (share ' + rp(b['Driver Share']) + ')' : '') : '') + (b.Reason ? '<br>Alasan: ' + esc(b.Reason) : '') + '</div>' +
       '<div class="actions">' + a.join('') + '</div>' +
     '</div>' +
     '<div class="side">' +
@@ -495,9 +495,36 @@ function cancelModal(b){
 }
 
 async function quickStatus(b, status){
-  if (status === 'Done' && !confirm('Tandai ' + b['Booking ID'] + ' selesai?')) return;
   try { await api('setStatus', { id: b['Booking ID'], status: status }); toast(b['Booking ID'] + ': ' + status); await refresh(); }
   catch (e) { toast(e.message, true); }
+}
+
+/* ---------- Done (jam selesai) ---------- */
+function nowTime(){ return new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date()); }
+
+function doneModal(b){
+  openModal(
+    '<h2>Selesai ' + esc(b['Booking ID']) + '</h2>' +
+    '<div class="note">' + esc(b['Pickup Date']) + ' ' + esc(b['Pickup Time']) + ' · ' + esc(b.Pickup) + ' &rarr; ' + esc(b['Drop Off']) +
+      (b['Driver ID'] ? ' · ' + esc(nameOf.driver(b['Driver ID'])) : '') + '</div>' +
+    '<div class="grid" style="margin-top:12px">' +
+      '<div><label>Jam selesai trip *</label><input type="time" id="dTime" value="' + nowTime() + '"></div>' +
+      '<div class="note full">Jam selesai dipakai untuk incentive lebih dari 12 jam. Kalau lebih kecil dari jam pickup, dianggap lewat tengah malam.</div>' +
+    '</div>' +
+    '<div class="foot"><button class="btn" id="mCancel">Tutup</button><button class="btn ok" id="mSave">Simpan Done</button></div>'
+  );
+  $('mCancel').onclick = closeModal;
+  $('mSave').onclick = async () => {
+    const t = $('dTime').value;
+    if (!t) return toast('Isi jam selesai', true);
+    $('mSave').disabled = true;
+    try {
+      const r = await api('setStatus', { id: b['Booking ID'], status: 'Done', doneTime: t });
+      const inc = (r.incentives || []).map(x => (x.type === 'Daily' ? 'per trip ' : 'lebih ' + x.hours + ' jam ') + rp(x.amount));
+      toast(b['Booking ID'] + ': Done' + (inc.length ? ' · incentive ' + inc.join(', ') : ''));
+      closeModal(); await refresh();
+    } catch (e) { toast(e.message, true); $('mSave').disabled = false; }
+  };
 }
 
 /* ---------- Events ---------- */
@@ -516,7 +543,7 @@ $('list').onclick = e => {
   const btn = e.target.closest('[data-act]'); if (!btn) return;
   const b = state.bookings.find(x => x['Booking ID'] === btn.dataset.id); if (!b) return;
   ({ assign: () => assignModal(b), edit: () => bookingForm(b), cancel: () => cancelModal(b),
-     ontrip: () => quickStatus(b, 'On Trip'), done: () => quickStatus(b, 'Done') })[btn.dataset.act]();
+     ontrip: () => quickStatus(b, 'On Trip'), done: () => doneModal(b) })[btn.dataset.act]();
 };
 
 /* ---------- Boot ---------- */
